@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from "react";
-import { Plus, Phone, Search, AlertTriangle, X, Trash2, Edit2, TrendingUp, Users, Clock } from "lucide-react";
+import { Plus, Phone, Search, AlertTriangle, X, Trash2, Edit2, TrendingUp, Users, Clock, LogOut } from "lucide-react";
 import { supabase } from "./supabaseClient";
+import Login from "./Login";
 
 const STATUSES = [
   { key: "novo", label: "Novo", color: "#4A6FA5" },
@@ -48,6 +49,8 @@ const emptyForm = {
 };
 
 export default function App() {
+  const [session, setSession] = useState(undefined);
+  const [profile, setProfile] = useState(null);
   const [leads, setLeads] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
@@ -71,9 +74,28 @@ export default function App() {
     setLoaded(true);
   }
 
+  // Verifica se já existe login ativo, e escuta mudanças (login/logout)
   useEffect(() => {
-    fetchLeads();
-    // Escuta mudanças em tempo real feitas por qualquer corretor
+    supabase.auth.getSession().then(({ data: { session } }) => setSession(session));
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+    });
+    return () => listener.subscription.unsubscribe();
+  }, []);
+
+  // Depois de logar, busca o perfil (papel: admin ou corretor) e os leads
+  useEffect(() => {
+    if (session === undefined) return; // ainda não sabemos
+    if (session === null) {
+      setLoaded(true);
+      return;
+    }
+    (async () => {
+      const { data: prof } = await supabase.from("profiles").select("*").eq("id", session.user.id).single();
+      setProfile(prof || null);
+      await fetchLeads();
+    })();
+
     const channel = supabase
       .channel("leads-realtime")
       .on("postgres_changes", { event: "*", schema: "public", table: "leads" }, () => {
@@ -83,7 +105,7 @@ export default function App() {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, []);
+  }, [session]);
 
   const corretores = useMemo(() => {
     const s = new Set(leads.map((l) => l.corretor).filter(Boolean));
@@ -141,7 +163,7 @@ export default function App() {
   }, [leads]);
 
   function openNew() {
-    setForm(emptyForm);
+    setForm({ ...emptyForm, corretor_email: isAdmin ? "" : session.user.email });
     setEditingId(null);
     setModalOpen(true);
   }
@@ -174,9 +196,15 @@ export default function App() {
     fetchLeads();
   }
 
-  if (!loaded) {
-    return <div style={{ fontFamily: "Inter, sans-serif", padding: 40, color: "#6B7280" }}>Carregando seus leads…</div>;
+  if (session === undefined || !loaded) {
+    return <div style={{ fontFamily: "Inter, sans-serif", padding: 40, color: "#6B7280" }}>Carregando…</div>;
   }
+
+  if (session === null) {
+    return <Login />;
+  }
+
+  const isAdmin = profile?.role === "admin";
 
   return (
     <div style={{ minHeight: "100vh", background: "#F5F6F8", fontFamily: "'Inter', sans-serif", color: "#0F2438" }}>
@@ -192,8 +220,19 @@ export default function App() {
           <div style={{ fontFamily: "'Fraunces', serif", fontSize: 28, fontWeight: 700, letterSpacing: -0.5 }}>
             Painel de Leads
           </div>
-          <div style={{ color: "#9FB4C7", fontSize: 14, marginTop: 4 }}>
-            Sinal vital do seu funil — nenhum lead esfria sem você ver.
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+            <div style={{ color: "#9FB4C7", fontSize: 14, marginTop: 4 }}>
+              Sinal vital do seu funil — nenhum lead esfria sem você ver.
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13, color: "#9FB4C7" }}>
+              <span>{session.user.email} · {isAdmin ? "Admin" : "Corretor"}</span>
+              <button
+                onClick={() => supabase.auth.signOut()}
+                style={{ display: "flex", alignItems: "center", gap: 4, background: "rgba(255,255,255,0.1)", border: "none", color: "#fff", padding: "6px 10px", borderRadius: 6, fontSize: 13 }}
+              >
+                <LogOut size={14} /> Sair
+              </button>
+            </div>
           </div>
 
           {errorMsg && (
@@ -368,7 +407,16 @@ export default function App() {
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
               <Field label="Nome*"><input style={inputStyle} value={form.nome} onChange={(e) => setForm({ ...form, nome: e.target.value })} /></Field>
               <Field label="Telefone*"><input style={inputStyle} value={form.telefone} onChange={(e) => setForm({ ...form, telefone: e.target.value })} /></Field>
-              <Field label="Corretor responsável"><input style={inputStyle} value={form.corretor} onChange={(e) => setForm({ ...form, corretor: e.target.value })} placeholder="Nome do corretor" /></Field>
+              <Field label="Corretor responsável (nome)"><input style={inputStyle} value={form.corretor} onChange={(e) => setForm({ ...form, corretor: e.target.value })} placeholder="Nome do corretor" /></Field>
+              <Field label="E-mail do corretor (login)">
+                <input
+                  style={{ ...inputStyle, background: isAdmin ? "#fff" : "#F3F4F6" }}
+                  value={form.corretor_email || ""}
+                  disabled={!isAdmin}
+                  onChange={(e) => setForm({ ...form, corretor_email: e.target.value })}
+                  placeholder="email@exemplo.com"
+                />
+              </Field>
               <Field label="Origem">
                 <select style={inputStyle} value={form.origem} onChange={(e) => setForm({ ...form, origem: e.target.value })}>
                   {ORIGENS.map((o) => <option key={o} value={o}>{o}</option>)}
