@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { X, ChevronLeft, ChevronRight, CalendarDays, Trash2 } from "lucide-react";
 import { supabase } from "./supabaseClient";
-import { inputStyle, overlayStyle, modalStyle, Field } from "./shared";
+import { selectStyle, inputStyle, overlayStyle, modalStyle, Field } from "./shared";
 
 function toISODate(d) {
-  return d.toISOString().slice(0, 10);
+  return d.toLocaleDateString("en-CA");
 }
 
 const diasSemana = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
@@ -12,12 +12,13 @@ const meses = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julh
 
 const emptyForm = (iso) => ({ data: iso, horario: "", titulo: "", local: "", descricao: "", concluido: false });
 
-export default function Agenda() {
+export default function Agenda({ session, isAdmin }) {
   const [compromissos, setCompromissos] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [refDate, setRefDate] = useState(new Date());
   const [modalOpen, setModalOpen] = useState(false);
   const [form, setForm] = useState(null);
+  const [dono, setDono] = useState(session.user.email); // de quem é a agenda que está aberta
 
   async function fetchCompromissos() {
     const { data } = await supabase.from("compromissos").select("*").order("data", { ascending: true }).order("horario", { ascending: true });
@@ -34,6 +35,12 @@ export default function Agenda() {
     return () => supabase.removeChannel(channel);
   }, []);
 
+  const donosDisponiveis = useMemo(() => {
+    const s = new Set(compromissos.map((c) => c.corretor_email).filter(Boolean));
+    s.add(session.user.email);
+    return Array.from(s).sort();
+  }, [compromissos]);
+
   const diasDoMes = useMemo(() => {
     const ano = refDate.getFullYear();
     const mes = refDate.getMonth();
@@ -45,15 +52,15 @@ export default function Agenda() {
 
   const porDia = useMemo(() => {
     const map = {};
-    compromissos.forEach((c) => {
+    compromissos.filter((c) => c.corretor_email === dono).forEach((c) => {
       if (!map[c.data]) map[c.data] = [];
       map[c.data].push(c);
     });
     return map;
-  }, [compromissos]);
+  }, [compromissos, dono]);
 
   function abrirNovo(date) {
-    setForm(emptyForm(toISODate(date)));
+    setForm({ ...emptyForm(toISODate(date)), corretor_email: dono });
     setModalOpen(true);
   }
 
@@ -69,10 +76,13 @@ export default function Agenda() {
     }
     const { id, created_at, ...rest } = form;
     if (rest.horario === "") rest.horario = null;
-    if (form.id) {
-      await supabase.from("compromissos").update(rest).eq("id", form.id);
-    } else {
-      await supabase.from("compromissos").insert(rest);
+    rest.corretor_email = rest.corretor_email || dono;
+    const { error } = form.id
+      ? await supabase.from("compromissos").update(rest).eq("id", form.id)
+      : await supabase.from("compromissos").insert(rest);
+    if (error) {
+      alert("Não foi possível salvar: " + error.message);
+      return;
     }
     setModalOpen(false);
     fetchCompromissos();
@@ -90,7 +100,12 @@ export default function Agenda() {
     <div>
       <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 14, flexWrap: "wrap" }}>
         <CalendarDays size={18} color="#0F2438" />
-        <span style={{ fontSize: 14, fontWeight: 700, color: "#0F2438" }}>Agenda de compromissos</span>
+        <span style={{ fontSize: 14, fontWeight: 700, color: "#0F2438" }}>{dono === session.user.email ? "Minha agenda" : "Agenda de " + dono}</span>
+        {isAdmin && donosDisponiveis.length > 1 && (
+          <select value={dono} onChange={(e) => setDono(e.target.value)} style={selectStyle}>
+            {donosDisponiveis.map((e) => <option key={e} value={e}>{e === session.user.email ? "Minha agenda" : e}</option>)}
+          </select>
+        )}
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: "auto" }}>
           <button onClick={() => setRefDate(new Date(refDate.getFullYear(), refDate.getMonth() - 1, 1))} style={{ background: "#F3F4F6", border: "none", borderRadius: 6, padding: 6 }}><ChevronLeft size={16} /></button>
           <div style={{ fontWeight: 700, fontSize: 14, minWidth: 130, textAlign: "center" }}>{meses[refDate.getMonth()]} {refDate.getFullYear()}</div>
